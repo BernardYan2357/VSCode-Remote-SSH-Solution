@@ -1,5 +1,6 @@
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -21,9 +22,10 @@ def validate_commit_id(commit_id: str) -> None:
 
 
 def get_windows_commit_id() -> str:
+    code = shutil.which("code.cmd") or "code"
     try:
         result = subprocess.run(
-            ["code", "--version"],
+            [code, "--version"],
             check=True,
             capture_output=True,
             text=True,
