@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 from utils import (
     download_with_progress,
+    get_vscode_server_commit_id,
     get_windows_commit_id,
     judge_system,
     open_download_url,
@@ -162,13 +163,15 @@ def mv_from_windows_to_linux(commit_id: str, ssh_host: str):
                 downloaded_file = wait_for_download(
                     download_directory,
                     existing_files,
+                    commit_id=commit_id,
                 )
                 shutil.copy2(downloaded_file, archive_path)
             elif choice == "2":
                 print("Waiting for a completed download in Downloads...")
                 downloaded_file = wait_for_download(
                     download_directory,
-                    existing_files,
+                    set(),
+                    commit_id=commit_id,
                 )
                 shutil.copy2(downloaded_file, archive_path)
             elif choice == "3":
@@ -176,6 +179,13 @@ def mv_from_windows_to_linux(commit_id: str, ssh_host: str):
                 download_with_progress(download_url, archive_path)
             else:
                 raise ValueError("Invalid choice. Please enter 1, 2, or 3.")
+
+            archive_commit = get_vscode_server_commit_id(archive_path)
+            if archive_commit != commit_id:
+                raise ValueError(
+                    f"Downloaded VSCode server commit ID {archive_commit} "
+                    f"does not match {commit_id}."
+                )
 
             print(f"Copying VSCode server to {ssh_host}...")
             subprocess.run(
@@ -247,4 +257,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nCancelled by user.")
+        raise SystemExit(130)

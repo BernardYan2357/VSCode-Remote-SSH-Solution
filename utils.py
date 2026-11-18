@@ -1,12 +1,15 @@
+import json
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.request
 import webbrowser
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Optional
 
 
 def judge_system() -> str:
@@ -58,15 +61,40 @@ def format_duration(seconds: float) -> str:
     return f"{seconds}s"
 
 
+def get_vscode_server_commit_id(archive_path: Path) -> str:
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive:
+            parts = PurePosixPath(member.name).parts
+            if not member.isfile() or not (
+                parts == ("product.json",)
+                or (
+                    len(parts) == 2
+                    and parts[0].startswith("vscode-server-linux-")
+                    and parts[1] == "product.json"
+                )
+            ):
+                continue
+            with archive.extractfile(member) as source:
+                product = json.load(source)
+            commit_id = product.get("commit") if isinstance(product, dict) else None
+            if not isinstance(commit_id, str) or not commit_id:
+                raise ValueError("VSCode server product.json has no valid commit ID.")
+            return commit_id
+    raise ValueError("VSCode server product.json was not found in the archive.")
+
+
 def wait_for_download(
     download_directory: Path,
     existing_files: set[Path],
     timeout: int = 1800,
+    *,
+    commit_id: Optional[str] = None,
 ) -> Path:
     temporary_suffixes = {".crdownload", ".part", ".tmp"}
     deadline = time.monotonic() + timeout
-    last_sizes: dict[Path, int] = {}
+    last_states: dict[Path, tuple[int, int]] = {}
     stable_counts: dict[Path, int] = {}
+    checked_states: dict[Path, tuple[int, int]] = {}
 
     while time.monotonic() < deadline:
         for path in download_directory.iterdir():
@@ -77,18 +105,47 @@ def wait_for_download(
                 or not path.name.lower().endswith((".tar.gz", ".tgz"))
             ):
                 continue
-            size = path.stat().st_size
-            if size == last_sizes.get(path):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            state = (stat.st_size, stat.st_mtime_ns)
+            if state == last_states.get(path):
                 stable_counts[path] = stable_counts.get(path, 0) + 1
-                if size > 0 and stable_counts[path] >= 2:
+                if stat.st_size > 0 and stable_counts[path] >= 2:
+                    if any(
+                        path.with_name(path.name + suffix).exists()
+                        for suffix in temporary_suffixes
+                    ):
+                        continue
+                    if checked_states.get(path) == state:
+                        continue
+                    checked_states[path] = state
+                    if commit_id is not None:
+                        try:
+                            archive_commit = get_vscode_server_commit_id(path)
+                        except (OSError, EOFError, tarfile.TarError, ValueError) as error:
+                            print(f"Skipping {path.name}: {error}")
+                            continue
+                        if archive_commit != commit_id:
+                            print(
+                                f"WARNING: {path.name}: VSCode server commit ID mismatch "
+                                f"(found {archive_commit}, expected {commit_id}). "
+                                "Skipping this file; waiting for a matching download.",
+                                flush=True,
+                            )
+                            continue
+                        print(f"Found VSCode server for commit ID {archive_commit}: {path}")
                     return path
             else:
-                last_sizes[path] = size
+                last_states[path] = state
                 stable_counts[path] = 0
         time.sleep(1)
 
+    commit_hint = f" for commit ID {commit_id}" if commit_id else ""
     raise TimeoutError(
-        f"No completed download found in {download_directory} within {timeout} seconds."
+        f"No completed download{commit_hint} "
+        f"found in {download_directory} within {timeout} seconds."
     )
 
 

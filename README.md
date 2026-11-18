@@ -15,13 +15,22 @@ flowchart TD
     W1 -->|是| W3[使用传入的 commitId]
     W2 --> W4{选择下载方式}
     W3 --> W4
-    W4 -->|浏览器下载| W5[打开浏览器并监听 Downloads 目录]
-    W4 -->|监听已有下载| W6[等待 Downloads 中出现完整压缩包]
+    W4 -->|浏览器下载| W5[打开浏览器并监听 Downloads 中的新下载]
+    W4 -->|监听已有或新下载| W6[扫描 Downloads 中已有及新下载的压缩包]
     W4 -->|命令行下载| W7[下载 Linux Server 压缩包]
-    W5 --> W8[获得 server.tar.gz]
-    W6 --> W8
+    W5 --> M1[等待非空压缩包稳定且无下载临时文件]
+    W6 --> M1
+    M1 --> M2[读取包内 product.json 的 commit ID]
+    M2 -->|读取成功| M3{是否匹配目标 commit ID?}
+    M2 -->|无法读取| M4[提示并跳过无效压缩包]
+    M4 --> M1
+    M3 -->|否| M5[输出 WARNING：文件名、实际及目标 commit ID]
+    M5 --> M1
+    M3 -->|是，复制到临时目录| W8[获得本地临时压缩包]
     W7 --> W8
-    W8 --> W9[scp 上传压缩包到 Linux]
+    W8 --> C1{上传前校验包内 commit ID 是否匹配?}
+    C1 -->|否或无法读取| C2[报错并停止传输]
+    C1 -->|是| W9[scp 上传压缩包到 Linux]
     W9 --> W10[ssh 远程创建目录并解压]
     W10 --> W11[删除 Linux 临时压缩包]
     W11 --> Z[完成]
