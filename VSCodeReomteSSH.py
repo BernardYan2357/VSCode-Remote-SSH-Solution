@@ -8,6 +8,8 @@ import urllib.error
 from pathlib import Path
 from typing import Optional
 from utils import (
+    SERVER_ARCHITECTURES,
+    detect_server_architecture,
     download_with_progress,
     get_vscode_server_commit_id,
     get_windows_commit_id,
@@ -83,17 +85,18 @@ def mv_vscode_server(source_path: Path):
         raise
 
 
-def download_vscode_server(commit_id: str):
+def download_vscode_server(commit_id: str, architecture: Optional[str] = None):
     """
     下载指定 commit_id 的 vscode-server 到当前用户的 .vscode-server/bin/ 目录下
     """
     validate_commit_id(commit_id)
+    architecture = architecture or detect_server_architecture()
 
     target_path = Path.home() / ".vscode-server" / "bin" / commit_id
     target_path.parent.mkdir(parents=True, exist_ok=True)
     download_url = (
         f"https://update.code.visualstudio.com/commit:{commit_id}/"
-        "server-linux-x64/stable"
+        f"server-linux-{architecture}/stable"
     )
     archive_path = target_path.parent / f"{commit_id}.tar.gz"
 
@@ -130,17 +133,19 @@ def download_vscode_server(commit_id: str):
         archive_path.unlink(missing_ok=True)
 
 
-def mv_from_windows_to_linux(commit_id: str, ssh_host: str):
+def mv_from_windows_to_linux(commit_id: str, ssh_host: str, architecture: Optional[str] = None):
     """
     从 Windows 下载 Linux 版 VSCode Server，并通过 SSH 传输到 Linux
     """
     validate_commit_id(commit_id)
     if not ssh_host:
         raise ValueError("SSH host is required on Windows.")
+    architecture = architecture or detect_server_architecture(ssh_host)
+    print(f"Target Linux architecture: {architecture}")
 
     download_url = (
         f"https://update.code.visualstudio.com/commit:{commit_id}/"
-        "server-linux-x64/stable"
+        f"server-linux-{architecture}/stable"
     )
     remote_archive = f"/tmp/vscode-server-{commit_id}.tar.gz"
     remote_target = f"$HOME/.vscode-server/bin/{commit_id}"
@@ -223,6 +228,10 @@ def main():
     parser = argparse.ArgumentParser(description="VSCode Remote SSH Solution.")
     parser.add_argument("--commitId", type=str, help="Commit ID of the VSCode server")
     parser.add_argument(
+        "--arch", choices=SERVER_ARCHITECTURES,
+        help="Target Linux architecture (default: detect via SSH on Windows, locally on Linux)",
+    )
+    parser.add_argument(
         "--sshHost",
         type=str,
         help="SSH config Host alias or user@host used when running on Windows",
@@ -239,12 +248,18 @@ def main():
 
     if not args.commitId:
         parser.error("Commit ID cannot be None.")
+    try:
+        validate_commit_id(args.commitId)
+    except ValueError as error:
+        parser.error(str(error))
 
     if system != "Linux":
         print("The script is going to download the VSCode server for the specified commit ID from Windows to Linux.")
-        mv_from_windows_to_linux(args.commitId, args.sshHost)
+        mv_from_windows_to_linux(args.commitId, args.sshHost, args.arch)
         return
 
+    architecture = args.arch or detect_server_architecture()
+    print(f"Target Linux architecture: {architecture}")
     search_vscode_server_path = search_vscode_server(args.commitId)
     if search_vscode_server_path:
         print(f"Found VSCode server for commit ID {args.commitId} at {search_vscode_server_path}.")
@@ -253,7 +268,7 @@ def main():
     else:
         print(f"No VSCode server found for commit ID {args.commitId}.")
         print(f"Starting to download VSCode server for commit ID {args.commitId}...")
-        download_vscode_server(args.commitId)
+        download_vscode_server(args.commitId, architecture)
 
 
 if __name__ == "__main__":

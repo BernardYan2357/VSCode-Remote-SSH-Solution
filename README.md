@@ -50,12 +50,14 @@ flowchart TD
 
 ```bash
 # windows
-python vscodeRemoteSSH.py --sshHost <your_ssh_host> --commitId <commit_id> # commitId 可选，若不传入则自动获取
+python VSCodeReomteSSH.py --sshHost <your_ssh_host> --commitId <commit_id> # commitId 可选，若不传入则自动获取
 # linux
-python vscodeRemoteSSH.py --commitId <commit_id>
+python VSCodeReomteSSH.py --commitId <commit_id>
+# 指定远端架构为 ARM64
+python VSCodeReomteSSH.py --sshHost rdk_s100 --arch arm64 # --arch 可选值为 x64、arm64，不传时由脚本自动识别；检测失败会报错
 ```
 
 ## Environment Requirements
 
-- VSCode。
+- VSCode；
 - Python 3.10 或更高版本。

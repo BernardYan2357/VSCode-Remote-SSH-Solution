@@ -12,6 +12,26 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 
+SERVER_ARCHITECTURES = ("x64", "arm64")
+
+
+def detect_server_architecture(ssh_host: Optional[str] = None) -> str:
+    if ssh_host is None:
+        machine = platform.machine()
+    else:
+        result = subprocess.run(
+            ["ssh", ssh_host, "uname -m"], check=True, capture_output=True, text=True,
+        )
+        machine = result.stdout.strip()
+    architecture = {"x86_64": "x64", "aarch64": "arm64"}.get(machine)
+    if architecture is None:
+        raise ValueError(
+            f"Unsupported architecture: {machine!r}. "
+            "Specify --arch x64 or --arch arm64."
+        )
+    return architecture
+
+
 def judge_system() -> str:
     system = platform.system()
     if system in {"Linux", "Windows"}:

@@ -18,15 +18,23 @@ COMMIT = "69047191fc427f2f92828279aae1d90d8eeda7ab"
 OTHER_COMMIT = "a" * 40
 
 
-def write_archive(path, commit=COMMIT):
+def write_archive(path, commit=COMMIT, architecture="x64"):
     content = json.dumps({"commit": commit}).encode()
     with tarfile.open(path, "w:gz") as archive:
-        member = tarfile.TarInfo("vscode-server-linux-x64/product.json")
+        member = tarfile.TarInfo(f"vscode-server-linux-{architecture}/product.json")
         member.size = len(content)
         archive.addfile(member, io.BytesIO(content))
+        for name, data in (
+            ("node", b"node"),
+            ("bin/code-server", b"#!/bin/sh\n"),
+            ("bin/helpers/check-requirements.sh", b"#!/bin/sh\n"),
+        ):
+            member = tarfile.TarInfo(f"vscode-server-linux-{architecture}/{name}")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
 
 
-class DownloadTests(unittest.TestCase):
+class DownloadTestCase(unittest.TestCase):
     def setUp(self):
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
         temporary = tempfile.TemporaryDirectory()
@@ -44,6 +52,8 @@ class DownloadTests(unittest.TestCase):
             self.downloads, excluded or set(), timeout=20, commit_id=COMMIT
         )
 
+
+class DownloadTests(DownloadTestCase):
     def test_existing_matching_archive_is_detected(self):
         archive = self.downloads / "vscode-server-linux-x64.tar.gz"
         write_archive(archive)
@@ -130,7 +140,7 @@ class DownloadTests(unittest.TestCase):
             patch.object(remote, "wait_for_download", side_effect=wait),
             patch.object(remote.subprocess, "run", side_effect=run) as run_mock,
         ):
-            remote.mv_from_windows_to_linux(COMMIT, "test-host")
+            remote.mv_from_windows_to_linux(COMMIT, "test-host", "x64")
         self.assertEqual(uploaded_commits, [COMMIT])
         self.assertEqual([call.args[0][0] for call in run_mock.call_args_list], ["scp", "ssh"])
 
@@ -162,8 +172,89 @@ class DownloadTests(unittest.TestCase):
             patch.object(remote.subprocess, "run") as run_mock,
         ):
             with self.assertRaisesRegex(ValueError, "does not match"):
-                remote.mv_from_windows_to_linux(COMMIT, "test-host")
+                remote.mv_from_windows_to_linux(COMMIT, "test-host", "x64")
         run_mock.assert_not_called()
+
+
+class ArchitectureTests(DownloadTestCase):
+    def test_automatic_detection_uses_remote_instead_of_windows_architecture(self):
+        with (
+            patch("utils.platform.machine", return_value="AMD64") as local_machine,
+            patch("utils.subprocess.run", return_value=subprocess.CompletedProcess(
+                [], 0, stdout="aarch64\n",
+            )) as run,
+        ):
+            self.assertEqual(utils.detect_server_architecture("rdk_s100"), "arm64")
+        local_machine.assert_not_called()
+        run.assert_called_once_with(
+            ["ssh", "rdk_s100", "uname -m"], check=True, capture_output=True, text=True,
+        )
+
+    def test_automatic_local_detection(self):
+        for machine, expected in (("x86_64", "x64"), ("aarch64", "arm64")):
+            with self.subTest(machine=machine), patch("utils.platform.machine", return_value=machine):
+                self.assertEqual(utils.detect_server_architecture(), expected)
+        with patch("utils.platform.machine", return_value="riscv64"):
+            with self.assertRaisesRegex(ValueError, "Unsupported architecture"):
+                utils.detect_server_architecture()
+
+    def test_remote_detection_failure_does_not_fall_back_to_x64(self):
+        with patch("utils.subprocess.run", side_effect=subprocess.CalledProcessError(1, "ssh")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                utils.detect_server_architecture("rdk_s100")
+
+    def test_windows_automatic_download_and_explicit_override(self):
+        for explicit, expected in ((None, "arm64"), ("arm64", "arm64"), ("x64", "x64")):
+            with (
+                self.subTest(explicit=explicit),
+                patch.object(Path, "home", return_value=self.home),
+                patch("builtins.input", return_value="3"),
+                patch.object(remote, "detect_server_architecture", return_value="arm64") as detect,
+                patch.object(remote, "download_with_progress", side_effect=lambda url, path:
+                    write_archive(path, architecture=expected)) as download,
+                patch.object(remote.subprocess, "run") as run,
+            ):
+                remote.mv_from_windows_to_linux(COMMIT, "rdk_s100", explicit)
+                self.assertIn(f"/server-linux-{expected}/stable", download.call_args.args[0])
+                self.assertEqual([call.args[0][0] for call in run.call_args_list], ["scp", "ssh"])
+                if explicit is None:
+                    detect.assert_called_once_with("rdk_s100")
+                else:
+                    detect.assert_not_called()
+
+    def test_linux_download_uses_local_arm64_architecture(self):
+        with (
+            patch.object(Path, "home", return_value=self.home),
+            patch("utils.platform.machine", return_value="aarch64"),
+            patch.object(remote, "download_with_progress", side_effect=lambda url, path:
+                write_archive(path, architecture="arm64")) as download,
+        ):
+            installed = remote.download_vscode_server(COMMIT)
+        self.assertIn("/server-linux-arm64/stable", download.call_args.args[0])
+        self.assertTrue(remote.verify_vscode_server(installed))
+
+    def test_cli_accepts_only_supported_architectures(self):
+        for architecture in ("x64", "arm64"):
+            with (
+                self.subTest(architecture=architecture),
+                patch.object(sys, "argv", ["script", "--commitId", COMMIT,
+                                          "--sshHost", "rdk_s100", "--arch", architecture]),
+                patch.object(remote, "judge_system", return_value="Windows"),
+                patch.object(remote, "mv_from_windows_to_linux") as transfer,
+            ):
+                remote.main()
+                transfer.assert_called_once_with(COMMIT, "rdk_s100", architecture)
+        for architecture in ("aarch64", "x86_64", "armhf"):
+            with (
+                self.subTest(architecture=architecture),
+                patch.object(sys, "argv", ["script", "--arch", architecture]),
+                contextlib.redirect_stderr(io.StringIO()),
+                patch.object(remote, "mv_from_windows_to_linux") as transfer,
+            ):
+                with self.assertRaises(SystemExit) as error:
+                    remote.main()
+                self.assertEqual(error.exception.code, 2)
+                transfer.assert_not_called()
 
 
 class InterruptTests(unittest.TestCase):
@@ -177,7 +268,7 @@ import runpy
 import sys
 import tempfile
 from unittest.mock import patch
-sys.argv = [{str(script)!r}, '--commitId', {COMMIT!r}, '--sshHost', 'test-host']
+sys.argv = [{str(script)!r}, '--commitId', {COMMIT!r}, '--sshHost', 'test-host', '--arch', 'x64']
 with tempfile.TemporaryDirectory() as home, \\
      patch('utils.judge_system', return_value='Windows'), \\
      patch.object(pathlib.Path, 'home', return_value=pathlib.Path(home)), \\
